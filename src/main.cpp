@@ -63,6 +63,11 @@ auto lex(const std::string& source) {
             } else {
                 res.push_back(t_lexeme("identifier", val));
             }
+        } else if (sym == '&') {
+            if (i < source.size() and source[i] == '&') {
+                i++;
+                res.push_back(t_lexeme("&&", "&&"));
+            }
         }
     }
     return res;
@@ -151,7 +156,7 @@ auto parse_term(std::list<t_lexeme>& lexemes) {
     return res;
 }
 
-t_ast parse_exp(std::list<t_lexeme>& lexemes) {
+auto parse_additive_exp(std::list<t_lexeme>& lexemes) {
     auto res = parse_term(lexemes);
     while (not lexemes.empty()) {
         auto name = lexemes.front().name;
@@ -163,6 +168,24 @@ t_ast parse_exp(std::list<t_lexeme>& lexemes) {
         res = t_ast("bin_op", name, {res, t});
     }
     return res;
+}
+
+auto parse_logical_and_exp(std::list<t_lexeme>& lexemes) {
+    auto res = parse_additive_exp(lexemes);
+    while (not lexemes.empty()) {
+        auto name = lexemes.front().name;
+        if (name != "&&") {
+            break;
+        }
+        lexemes.pop_front();
+        auto t = parse_additive_exp(lexemes);
+        res = t_ast("bin_op", name, {res, t});
+    }
+    return res;
+}
+
+t_ast parse_exp(std::list<t_lexeme>& lexemes) {
+    return parse_logical_and_exp(lexemes);
 }
 
 auto parse_statement(std::list<t_lexeme>& lexemes) {
@@ -225,22 +248,39 @@ std::string gen_exp_asm(const t_ast& ast) {
     } else if (ast.name == "constant") {
         res += "    movl $"; res += ast.value; res += ", %eax\n";
     } else if (ast.name == "bin_op") {
-        res += gen_exp_asm(ast.children[0]);
-        instr(res, "push %rax");
-        res += gen_exp_asm(ast.children[1]);
-        instr(res, "pop %rbx");
-        if (ast.value == "+") {
-            instr(res, "add %ebx, %eax");
-        } else if (ast.value == "-") {
-            instr(res, "sub %eax, %ebx");
-            instr(res, "mov %ebx, %eax");
-        } else if (ast.value == "*") {
-            instr(res, "imul %ebx, %eax");
-        } else if (ast.value == "/") {
-            instr(res, "mov %eax, %ecx");
-            instr(res, "mov %ebx, %eax");
-            instr(res, "movl $0, %edx");
-            instr(res, "idiv %ecx");
+        if (ast.value == "&&") {
+            res += gen_exp_asm(ast.children[0]);
+            instr(res, "cmpl $0, %eax");
+            instr(res, "movl $0, %eax");
+            instr(res, "setne %al");
+
+            instr(res, "push %rax");
+
+            res += gen_exp_asm(ast.children[1]);
+            instr(res, "cmpl $0, %eax");
+            instr(res, "movl $0, %eax");
+            instr(res, "setne %al");
+
+            instr(res, "pop %rbx");
+            instr(res, "and %ebx, %eax");
+        } else {
+            res += gen_exp_asm(ast.children[0]);
+            instr(res, "push %rax");
+            res += gen_exp_asm(ast.children[1]);
+            instr(res, "pop %rbx");
+            if (ast.value == "+") {
+                instr(res, "add %ebx, %eax");
+            } else if (ast.value == "-") {
+                instr(res, "sub %eax, %ebx");
+                instr(res, "mov %ebx, %eax");
+            } else if (ast.value == "*") {
+                instr(res, "imul %ebx, %eax");
+            } else if (ast.value == "/") {
+                instr(res, "mov %eax, %ecx");
+                instr(res, "mov %ebx, %eax");
+                instr(res, "movl $0, %edx");
+                instr(res, "idiv %ecx");
+            }
         }
     }
     return res;
