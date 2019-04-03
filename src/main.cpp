@@ -7,6 +7,9 @@
 #include <algorithm>
 #include <cctype>
 #include <list>
+#include <functional>
+
+std::ofstream log;
 
 const std::vector<std::string> un_ops = {"-", "!", "~"};
 
@@ -36,18 +39,28 @@ auto lex(const std::string& source) {
     std::list<t_lexeme> res;
     auto i = 0u;
     while (i < source.size()) {
+        std::vector<std::string> keywords = {"int", "return"};
+        std::vector<std::string> tt = {
+            "&&", "||", "==", "!=", "<=", ">=", "<", ">",
+            "{", "}", "(", ")", ";", "-", "~", "!", "+", "/", "*"
+        };
+        auto found = false;
+        for (auto& t : tt) {
+            if (source.substr(i, t.size()) == t) {
+                res.push_back(t_lexeme(t, t));
+                found = true;
+                i += t.size();
+                break;
+            }
+        }
+        if (found) {
+            continue;
+        }
         auto sym = source[i];
         i++;
         std::string val;
         val += sym;
-        std::vector<std::string> keywords = {"int", "return"};
-        std::vector<char> tmp = {
-            '{', '}', '(', ')', ';', '-', '~', '!', '+', '/', '*'
-        };
-        if (contains(tmp, sym)) {
-            auto s = std::string(1, sym);
-            res.push_back(t_lexeme(s, s));
-        } else if (is_digit(sym)) {
+        if (is_digit(sym)) {
             while (i < source.size() and isdigit(source[i])) {
                 val += source[i];
                 i++;
@@ -62,11 +75,6 @@ auto lex(const std::string& source) {
                 res.push_back(t_lexeme("keyword", val));
             } else {
                 res.push_back(t_lexeme("identifier", val));
-            }
-        } else if (sym == '&') {
-            if (i < source.size() and source[i] == '&') {
-                i++;
-                res.push_back(t_lexeme("&&", "&&"));
             }
         }
     }
@@ -142,50 +150,51 @@ auto parse_factor(std::list<t_lexeme>& lexemes) {
     }
 }
 
-auto parse_term(std::list<t_lexeme>& lexemes) {
-    auto res = parse_factor(lexemes);
+auto parse_left_assoc_bin_op(
+    const std::vector<std::string>& ops,
+    std::function<t_ast(std::list<t_lexeme>&)> parse_subexp,
+    std::list<t_lexeme>& lexemes
+) {
+    auto res = parse_subexp(lexemes);
     while (not lexemes.empty()) {
-        auto name = lexemes.front().name;
-        if (not contains({"*", "/"}, name)) {
+        auto op = lexemes.front().name;
+        if (not contains(ops, op)) {
             break;
         }
         lexemes.pop_front();
-        auto f = parse_factor(lexemes);
-        res = t_ast("bin_op", name, {res, f});
+        auto t = parse_subexp(lexemes);
+        res = t_ast("bin_op", op, {res, t});
     }
     return res;
 }
 
-auto parse_additive_exp(std::list<t_lexeme>& lexemes) {
-    auto res = parse_term(lexemes);
-    while (not lexemes.empty()) {
-        auto name = lexemes.front().name;
-        if (not contains({"+", "-"}, name)) {
-            break;
-        }
-        lexemes.pop_front();
-        auto t = parse_term(lexemes);
-        res = t_ast("bin_op", name, {res, t});
-    }
-    return res;
+auto parse_mul_exp(std::list<t_lexeme>& lexemes) {
+    return parse_left_assoc_bin_op({"*", "/"}, parse_factor, lexemes);
 }
 
-auto parse_logical_and_exp(std::list<t_lexeme>& lexemes) {
-    auto res = parse_additive_exp(lexemes);
-    while (not lexemes.empty()) {
-        auto name = lexemes.front().name;
-        if (name != "&&") {
-            break;
-        }
-        lexemes.pop_front();
-        auto t = parse_additive_exp(lexemes);
-        res = t_ast("bin_op", name, {res, t});
-    }
-    return res;
+auto parse_plus_exp(std::list<t_lexeme>& lexemes) {
+    return parse_left_assoc_bin_op({"+", "-"}, parse_mul_exp, lexemes);
+}
+
+auto parse_lt_exp(std::list<t_lexeme>& lexemes) {
+    std::vector<std::string> ops = {"<", "<=", ">", ">="};
+    return parse_left_assoc_bin_op(ops, parse_plus_exp, lexemes);
+}
+
+auto parse_eq_exp(std::list<t_lexeme>& lexemes) {
+    return parse_left_assoc_bin_op({"==", "!="}, parse_lt_exp, lexemes);
+}
+
+auto parse_and_exp(std::list<t_lexeme>& lexemes) {
+    return parse_left_assoc_bin_op({"&&"}, parse_eq_exp, lexemes);
+}
+
+auto parse_or_exp(std::list<t_lexeme>& lexemes) {
+    return parse_left_assoc_bin_op({"||"}, parse_and_exp, lexemes);
 }
 
 t_ast parse_exp(std::list<t_lexeme>& lexemes) {
-    return parse_logical_and_exp(lexemes);
+    return parse_or_exp(lexemes);
 }
 
 auto parse_statement(std::list<t_lexeme>& lexemes) {
@@ -210,19 +219,18 @@ auto parse_program(std::list<t_lexeme>& lexemes) {
     return t_ast("program", {parse_function(lexemes)});
 }
 
-void print_spaces(unsigned n) {
-    for (auto i = 0u; i < n; i++) {
-        std::cout << " ";
-    }
-}
-
 void print(const t_ast& t, unsigned level = 0) {
+    auto print_spaces = [&](unsigned n) {
+        for (auto i = 0u; i < n; i++) {
+            log << " ";
+        }
+    };
     print_spaces(4 * level);
-    std::cout << t.name;
+    log << t.name;
     if (t.value.size() > 0) {
-        std::cout << " : " << t.value;
+        log << " : " << t.value;
     }
-    std::cout << "\n";
+    log << "\n";
     for (auto& c : t.children) {
         print(c, level + 1);
     }
@@ -234,6 +242,19 @@ auto instr(std::string& a, const std::string& b) {
 
 std::string gen_exp_asm(const t_ast& ast) {
     std::string res;
+    auto rel_bin_op = [&]() {
+        res += gen_exp_asm(ast.children[0]);
+        instr(res, "push %rax");
+        res += gen_exp_asm(ast.children[1]);
+        instr(res, "pop %rbx");
+        instr(res, "cmp %eax, %ebx");
+        instr(res, "movl $0, %eax");
+    };
+    auto boolify = [&]() {
+        instr(res, "cmpl $0, %eax");
+        instr(res, "movl $0, %eax");
+        instr(res, "setne %al");
+    };
     if (ast.name == "un_op") {
         res += gen_exp_asm(ast.children[0]);
         if (ast.value == "-") {
@@ -248,21 +269,46 @@ std::string gen_exp_asm(const t_ast& ast) {
     } else if (ast.name == "constant") {
         res += "    movl $"; res += ast.value; res += ", %eax\n";
     } else if (ast.name == "bin_op") {
-        if (ast.value == "&&") {
+        if (ast.value == "||") {
             res += gen_exp_asm(ast.children[0]);
-            instr(res, "cmpl $0, %eax");
-            instr(res, "movl $0, %eax");
-            instr(res, "setne %al");
+            boolify();
 
             instr(res, "push %rax");
 
             res += gen_exp_asm(ast.children[1]);
-            instr(res, "cmpl $0, %eax");
-            instr(res, "movl $0, %eax");
-            instr(res, "setne %al");
+            boolify();
+
+            instr(res, "pop %rbx");
+            instr(res, "or %ebx, %eax");
+        } else if (ast.value == "&&") {
+            res += gen_exp_asm(ast.children[0]);
+            boolify();
+
+            instr(res, "push %rax");
+
+            res += gen_exp_asm(ast.children[1]);
+            boolify();
 
             instr(res, "pop %rbx");
             instr(res, "and %ebx, %eax");
+        } else if (ast.value == "==") {
+            rel_bin_op();
+            instr(res, "sete %al");
+        } else if (ast.value == "!=") {
+            rel_bin_op();
+            instr(res, "setne %al");
+        } else if (ast.value == "<") {
+            rel_bin_op();
+            instr(res, "setl %al");
+        } else if (ast.value == "<=") {
+            rel_bin_op();
+            instr(res, "setle %al");
+        } else if (ast.value == ">") {
+            rel_bin_op();
+            instr(res, "setg %al");
+        } else if (ast.value == ">=") {
+            rel_bin_op();
+            instr(res, "setge %al");
         } else {
             res += gen_exp_asm(ast.children[0]);
             instr(res, "push %rax");
@@ -307,19 +353,36 @@ int main(int argc, char** argv) {
         std::cerr << "error : could not open input file\n";
         return 1;
     }
+
+    log.open("log.txt");
+    auto sep = [&]() {
+        log << "\n";
+        log << "-------------\n";
+        log << "\n";
+    };
+
     std::stringstream buf;
     buf << is.rdbuf();
     auto src = buf.str();
     auto tokens = lex(src);
+
+    for (auto& l : tokens) {
+        log << l.name << " -- " << l.value << "\n";
+    }
+    sep();
+
     try {
         auto ast = parse_program(tokens);
-        // print(ast);
+        print(ast);
+        sep();
         std::ofstream os(argv[2]);
         if (!os.good()) {
             std::cerr << "error : could not open output file\n";
             return 1;
         }
-        os << gen_asm(ast);
+        auto res = gen_asm(ast);
+        log << res;
+        os << res;
     } catch (const std::runtime_error& e) {
         std::cout << e.what() << "\n";
         return 1;
