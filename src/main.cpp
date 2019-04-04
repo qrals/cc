@@ -8,6 +8,8 @@
 #include <cctype>
 #include <list>
 #include <functional>
+#include <initializer_list>
+#include <unordered_map>
 
 std::ofstream log;
 
@@ -21,11 +23,27 @@ bool contains(const std::vector<t>& vec, const t& elt) {
 struct t_lexeme {
     std::string name;
     std::string value;
+
     t_lexeme(const std::string& n_name, const std::string& n_value) {
         name = n_name;
         value = n_value;
     }
+
+    t_lexeme(const std::initializer_list<std::string>& l) {
+        name = *(l.begin());
+        value = *(l.begin() + 1);
+    }
+
+    bool operator==(const t_lexeme& l) const {
+        return name == l.name and value == l.value;
+    }
+
+    bool operator!=(const t_lexeme& l) const {
+        return !((*this) == l);
+    }
 };
+
+typedef std::unordered_map<std::string, unsigned> t_var_map;
 
 auto is_digit(char ch) {
     return '0' <= ch and ch <= '9';
@@ -41,7 +59,7 @@ auto lex(const std::string& source) {
     while (i < source.size()) {
         std::vector<std::string> keywords = {"int", "return"};
         std::vector<std::string> tt = {
-            "&&", "||", "==", "!=", "<=", ">=", "<", ">",
+            "&&", "||", "==", "!=", "<=", ">=", "<", ">", "=",
             "{", "}", "(", ")", ";", "-", "~", "!", "+", "/", "*"
         };
         auto found = false;
@@ -103,38 +121,43 @@ struct t_ast {
     }
 };
 
-auto pop_value(std::list<t_lexeme>& lexemes, const std::string& value) {
+auto& get_front(std::list<t_lexeme>& lexemes) {
     if (lexemes.empty()) {
         throw std::runtime_error("parse error");
     } else {
-        auto lexeme = lexemes.front();
-        lexemes.pop_front();
-        if (lexeme.value != value) {
-            throw std::runtime_error("parse error");
-        }
+        return lexemes.front();
+    }
+}
+
+auto pop_value(std::list<t_lexeme>& lexemes, const std::string& value) {
+    auto lexeme = get_front(lexemes);
+    lexemes.pop_front();
+    if (lexeme.value != value) {
+        throw std::runtime_error("parse error");
+    }
+}
+
+auto pop_lexeme(std::list<t_lexeme>& lexemes, const t_lexeme& l) {
+    auto lexeme = get_front(lexemes);
+    lexemes.pop_front();
+    if (lexeme != l) {
+        throw std::runtime_error("parse error");
     }
 }
 
 auto pop_name(std::list<t_lexeme>& lexemes, const std::string& name) {
-    if (lexemes.empty()) {
+    auto lexeme = get_front(lexemes);
+    lexemes.pop_front();
+    if (lexeme.name != name) {
         throw std::runtime_error("parse error");
-    } else {
-        auto lexeme = lexemes.front();
-        lexemes.pop_front();
-        if (lexeme.name != name) {
-            throw std::runtime_error("parse error");
-        }
-        return lexeme.value;
     }
+    return lexeme.value;
 }
 
 t_ast parse_exp(std::list<t_lexeme>&);
 
 auto parse_factor(std::list<t_lexeme>& lexemes) {
-    if (lexemes.empty()) {
-        throw std::runtime_error("parse error");
-    }
-    auto front = lexemes.front();
+    auto front = get_front(lexemes);
     lexemes.pop_front();
     if (front.name == "(") {
         auto exp = parse_exp(lexemes);
@@ -145,6 +168,8 @@ auto parse_factor(std::list<t_lexeme>& lexemes) {
         return t_ast("un_op", front.name, {f});
     } else if (front.name == "literal") {
         return t_ast("constant", front.value);
+    } else if (front.name == "identifier") {
+        return t_ast("variable", front.value);
     } else {
         throw std::runtime_error("parse error");
     }
@@ -168,6 +193,23 @@ auto parse_left_assoc_bin_op(
     return res;
 }
 
+t_ast parse_right_assoc_bin_op(
+    const std::vector<std::string>& ops,
+    std::function<t_ast(std::list<t_lexeme>&)> parse_subexp,
+    std::list<t_lexeme>& lexemes
+) {
+    auto res = parse_subexp(lexemes);
+    if (not lexemes.empty()) {
+        auto op = lexemes.front().name;
+        if (contains(ops, op)) {
+            lexemes.pop_front();
+            auto t = parse_right_assoc_bin_op(ops, parse_subexp, lexemes);
+            res = t_ast("bin_op", op, {res, t});
+        }
+    }
+    return res;
+}
+
 auto parse_mul_exp(std::list<t_lexeme>& lexemes) {
     return parse_left_assoc_bin_op({"*", "/"}, parse_factor, lexemes);
 }
@@ -181,27 +223,49 @@ auto parse_lt_exp(std::list<t_lexeme>& lexemes) {
     return parse_left_assoc_bin_op(ops, parse_plus_exp, lexemes);
 }
 
-auto parse_eq_exp(std::list<t_lexeme>& lexemes) {
+auto parse_eqeq_exp(std::list<t_lexeme>& lexemes) {
     return parse_left_assoc_bin_op({"==", "!="}, parse_lt_exp, lexemes);
 }
 
 auto parse_and_exp(std::list<t_lexeme>& lexemes) {
-    return parse_left_assoc_bin_op({"&&"}, parse_eq_exp, lexemes);
+    return parse_left_assoc_bin_op({"&&"}, parse_eqeq_exp, lexemes);
 }
 
 auto parse_or_exp(std::list<t_lexeme>& lexemes) {
     return parse_left_assoc_bin_op({"||"}, parse_and_exp, lexemes);
 }
 
+auto parse_eq_exp(std::list<t_lexeme>& lexemes) {
+    return parse_right_assoc_bin_op({"="}, parse_or_exp, lexemes);
+}
+
 t_ast parse_exp(std::list<t_lexeme>& lexemes) {
-    return parse_or_exp(lexemes);
+    return parse_eq_exp(lexemes);
 }
 
 auto parse_statement(std::list<t_lexeme>& lexemes) {
-    pop_value(lexemes, "return");
-    auto child = parse_exp(lexemes);
-    pop_value(lexemes, ";");
-    return t_ast("statement", {child});
+    if (lexemes.front() == t_lexeme{"keyword", "int"}) {
+        lexemes.pop_front();
+        auto name = pop_name(lexemes, "identifier");
+        std::vector<t_ast> children;
+        if (get_front(lexemes) == t_lexeme{"=", "="}) {
+            lexemes.pop_front();
+            children.push_back(parse_exp(lexemes));
+            pop_lexeme(lexemes, {";", ";"});
+        } else {
+            pop_lexeme(lexemes, {";", ";"});
+        }
+        return t_ast("declaration", name, children);
+    } else if (lexemes.front() == t_lexeme{"keyword", "return"}) {
+        lexemes.pop_front();
+        auto child = parse_exp(lexemes);
+        pop_lexeme(lexemes, {";", ";"});
+        return t_ast("return", {child});
+    } else {
+        auto child = parse_exp(lexemes);
+        pop_lexeme(lexemes, {";", ";"});
+        return t_ast("exp", {child});
+    }
 }
 
 auto parse_function(std::list<t_lexeme>& lexemes) {
@@ -210,9 +274,15 @@ auto parse_function(std::list<t_lexeme>& lexemes) {
     pop_value(lexemes, "(");
     pop_value(lexemes, ")");
     pop_value(lexemes, "{");
-    auto child = parse_statement(lexemes);
-    pop_value(lexemes, "}");
-    return t_ast("function", name, {child});
+    std::vector<t_ast> children;
+    while (true) {
+        if (get_front(lexemes).name == "}") {
+            lexemes.pop_front();
+            break;
+        }
+        children.push_back(parse_statement(lexemes));
+    }
+    return t_ast("function", name, children);
 }
 
 auto parse_program(std::list<t_lexeme>& lexemes) {
@@ -240,12 +310,16 @@ auto instr(std::string& a, const std::string& b) {
     a += "    "; a += b; a += "\n";
 }
 
-std::string gen_exp_asm(const t_ast& ast) {
+auto gen_var_adr(unsigned x) {
+    return std::string("-") + std::to_string(4 * (x + 1)) + "(%rbp)";
+}
+
+std::string gen_exp_asm(const t_ast& ast, const t_var_map& var_map) {
     std::string res;
     auto rel_bin_op = [&]() {
-        res += gen_exp_asm(ast.children[0]);
+        res += gen_exp_asm(ast.children[0], var_map);
         instr(res, "push %rax");
-        res += gen_exp_asm(ast.children[1]);
+        res += gen_exp_asm(ast.children[1], var_map);
         instr(res, "pop %rbx");
         instr(res, "cmp %eax, %ebx");
         instr(res, "movl $0, %eax");
@@ -256,7 +330,7 @@ std::string gen_exp_asm(const t_ast& ast) {
         instr(res, "setne %al");
     };
     if (ast.name == "un_op") {
-        res += gen_exp_asm(ast.children[0]);
+        res += gen_exp_asm(ast.children[0], var_map);
         if (ast.value == "-") {
             instr(res, "neg %eax");
         } else if (ast.value == "~") {
@@ -268,25 +342,35 @@ std::string gen_exp_asm(const t_ast& ast) {
         }
     } else if (ast.name == "constant") {
         res += "    movl $"; res += ast.value; res += ", %eax\n";
+    } else if (ast.name == "variable") {
+        res += "    movl ";
+        res += gen_var_adr(var_map.at(ast.value));
+        res += ", %eax\n";
     } else if (ast.name == "bin_op") {
-        if (ast.value == "||") {
-            res += gen_exp_asm(ast.children[0]);
+        if (ast.value == "=") {
+            res += gen_exp_asm(ast.children[1], var_map);
+            auto var_name = ast.children[0].value;
+            res += "    movl %eax, ";
+            res += gen_var_adr(var_map.at(var_name));
+            res += "\n";
+        } else if (ast.value == "||") {
+            res += gen_exp_asm(ast.children[0], var_map);
             boolify();
 
             instr(res, "push %rax");
 
-            res += gen_exp_asm(ast.children[1]);
+            res += gen_exp_asm(ast.children[1], var_map);
             boolify();
 
             instr(res, "pop %rbx");
             instr(res, "or %ebx, %eax");
         } else if (ast.value == "&&") {
-            res += gen_exp_asm(ast.children[0]);
+            res += gen_exp_asm(ast.children[0], var_map);
             boolify();
 
             instr(res, "push %rax");
 
-            res += gen_exp_asm(ast.children[1]);
+            res += gen_exp_asm(ast.children[1], var_map);
             boolify();
 
             instr(res, "pop %rbx");
@@ -310,9 +394,9 @@ std::string gen_exp_asm(const t_ast& ast) {
             rel_bin_op();
             instr(res, "setge %al");
         } else {
-            res += gen_exp_asm(ast.children[0]);
+            res += gen_exp_asm(ast.children[0], var_map);
             instr(res, "push %rax");
-            res += gen_exp_asm(ast.children[1]);
+            res += gen_exp_asm(ast.children[1], var_map);
             instr(res, "pop %rbx");
             if (ast.value == "+") {
                 instr(res, "add %ebx, %eax");
@@ -336,10 +420,32 @@ auto gen_asm(const t_ast& ast) {
     auto& fun_ast = ast.children[0];
     std::string res = ".globl "; res += fun_ast.value; res += "\n";
     res += fun_ast.value; res += ":\n";
-    auto& ret_ast = fun_ast.children[0];
-    auto& exp_ast = ret_ast.children[0];
-    res += gen_exp_asm(exp_ast);
-    instr(res, "ret");
+    instr(res, "push %rbp");
+    instr(res, "mov %rsp, %rbp");
+    t_var_map var_map;
+    for (auto& c : fun_ast.children) {
+        if (c.name == "declaration") {
+            auto var_name = c.value;
+            if (not c.children.empty()) {
+                res += gen_exp_asm(c.children[0], var_map);
+                var_map[var_name] = var_map.size();
+                res += "    movl %eax, ";
+                res += gen_var_adr(var_map[var_name]);
+                res += "\n";
+                instr(res, "subq $4, %rsp");
+            } else {
+                var_map[var_name] = var_map.size();
+                instr(res, "subq $4, %rsp");
+            }
+        } else if (c.name == "exp") {
+            res += gen_exp_asm(c.children[0], var_map);
+        } else if (c.name == "return") {
+            res += gen_exp_asm(c.children[0], var_map);
+            instr(res, "mov %rbp, %rsp");
+            instr(res, "pop %rbp");
+            instr(res, "ret");
+        }
+    }
     return res;
 }
 
