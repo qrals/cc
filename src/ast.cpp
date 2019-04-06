@@ -144,11 +144,21 @@ namespace {
         return parse_eq_exp(lexemes);
     }
 
+    t_ast parse_block_item(std::list<t_lexeme>&);
+
     t_ast parse_statement(std::list<t_lexeme>& lexemes) {
         if (lexemes.empty()) {
             throw std::runtime_error("parse error");
         }
-        if (lexemes.front() == t_lexeme{"keyword", "if"}) {
+        if (lexemes.front() == t_lexeme{"{", "{"}) {
+            lexemes.pop_front();
+            std::vector<t_ast> children;
+            while (get_front(lexemes) != t_lexeme{"}", "}"}) {
+                children.push_back(parse_block_item(lexemes));
+            }
+            lexemes.pop_front();
+            return t_ast("compound_statement", children);
+        } else if (lexemes.front() == t_lexeme{"keyword", "if"}) {
             lexemes.pop_front();
             pop_lexeme(lexemes, {"(", "("});
             std::vector<t_ast> children;
@@ -160,7 +170,23 @@ namespace {
                 children.push_back(parse_statement(lexemes));
             }
             return t_ast("if", children);
-        } else if (lexemes.front() == t_lexeme{"keyword", "int"}) {
+        } else if (lexemes.front() == t_lexeme{"keyword", "return"}) {
+            lexemes.pop_front();
+            auto child = parse_exp(lexemes);
+            pop_lexeme(lexemes, {";", ";"});
+            return t_ast("return", {child});
+        } else {
+            auto child = parse_exp(lexemes);
+            pop_lexeme(lexemes, {";", ";"});
+            return t_ast("exp", {child});
+        }
+    }
+
+    t_ast parse_block_item(std::list<t_lexeme>& lexemes) {
+        if (lexemes.empty()) {
+            throw std::runtime_error("parse error");
+        }
+        if (lexemes.front() == t_lexeme{"keyword", "int"}) {
             lexemes.pop_front();
             auto name = pop_name(lexemes, "identifier");
             std::vector<t_ast> children;
@@ -172,15 +198,8 @@ namespace {
                 pop_lexeme(lexemes, {";", ";"});
             }
             return t_ast("declaration", name, children);
-        } else if (lexemes.front() == t_lexeme{"keyword", "return"}) {
-            lexemes.pop_front();
-            auto child = parse_exp(lexemes);
-            pop_lexeme(lexemes, {";", ";"});
-            return t_ast("return", {child});
         } else {
-            auto child = parse_exp(lexemes);
-            pop_lexeme(lexemes, {";", ";"});
-            return t_ast("exp", {child});
+            return parse_statement(lexemes);
         }
     }
 
@@ -196,7 +215,10 @@ namespace {
                 lexemes.pop_front();
                 break;
             }
-            children.push_back(parse_statement(lexemes));
+            children.push_back(parse_block_item(lexemes));
+        }
+        if (not lexemes.empty()) {
+            throw std::runtime_error("parse error");
         }
         return t_ast("function", name, children);
     }
