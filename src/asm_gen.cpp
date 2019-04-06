@@ -81,22 +81,11 @@ namespace {
         // }
     };
 
-    struct t_block_info {
+    struct t_context {
         t_var_map var_map;
         std::string loop_body_end;
         std::string loop_end;
-
-        t_block_info() = default;
-
-        t_block_info(
-            const t_block_info& bi,
-            const std::string& l0,
-            const std::string& l1
-        )
-            : var_map(bi.var_map) {
-            loop_body_end = l0;
-            loop_end = l1;
-        }
+        std::string func_name;
     };
 
     auto boolify_eax() {
@@ -145,6 +134,15 @@ namespace {
                 throw std::runtime_error("undeclared identifier");
             }
             set_eax(var_map.get_var_adr(ast.value));
+        } else if (ast.name == "function_call") {
+            auto& func_name = ast.value;
+            a("push %rbx");
+            a("push %rcx");
+            a("push %rdx");
+            a("call ", func_name);
+            a("pop %rdx");
+            a("pop %rcx");
+            a("pop %rbx");
         } else if (ast.name == "bin_op") {
             if (ast.value == "=") {
                 auto& lval = ast.children[0];
@@ -244,145 +242,158 @@ namespace {
         }
     }
 
-    void gen_compound_statement(const t_ast&, const t_block_info&);
+    void gen_compound_statement(const t_ast&, const t_context&);
 
-    void gen_declaration(const t_ast& ast, t_block_info& bi) {
+    void gen_declaration(const t_ast& ast, t_context& ctx) {
         auto var_name = ast.value;
-        if (not bi.var_map.can_declare(var_name)) {
+        if (not ctx.var_map.can_declare(var_name)) {
             throw std::runtime_error("variable redefinition");
         }
-        bi.var_map.insert_var(var_name);
+        ctx.var_map.insert_var(var_name);
         if (not ast.children.empty()) {
-            gen_exp(ast.children[0], bi.var_map);
-            a("movl %eax, ", bi.var_map.get_var_adr(var_name));
+            gen_exp(ast.children[0], ctx.var_map);
+            a("movl %eax, ", ctx.var_map.get_var_adr(var_name));
         }
     }
 
-    void gen_statement(const t_ast& c, t_block_info& b) {
+    void gen_statement(const t_ast& c, t_context& ctx) {
         if (c.name == "if") {
             auto cond_true = make_label();
             auto cond_false = make_label();
             auto end = make_label();
-            gen_exp(c.children[0], b.var_map);
+            gen_exp(c.children[0], ctx.var_map);
             a("cmpl $0, %eax");
             a("jne ", cond_true);
             a("jmp ", cond_false);
             put_label(cond_true);
-            gen_statement(c.children[1], b);
+            gen_statement(c.children[1], ctx);
             a("jmp ", end);
             put_label(cond_false);
             if (c.children.size() == 3) {
-                gen_statement(c.children[2], b);
+                gen_statement(c.children[2], ctx);
             }
             put_label(end);
         } else if (c.name == "exp_statement") {
             if (not c.children.empty()) {
-                gen_exp(c.children[0], b.var_map);
+                gen_exp(c.children[0], ctx.var_map);
             }
         } else if (c.name == "return") {
-            gen_exp(c.children[0], b.var_map);
-            a("jmp main_end");
+            gen_exp(c.children[0], ctx.var_map);
+            a("jmp ", ctx.func_name + "_end");
         } else if (c.name == "compound_statement") {
-            gen_compound_statement(c, b);
+            gen_compound_statement(c, ctx);
         } else if (c.name == "while") {
-            t_block_info nb(b, make_label(), make_label());
+            t_context nctx = ctx;
+            nctx.loop_end = make_label();
+            nctx.loop_body_end = make_label();
             auto loop_begin = make_label();
             auto loop_body = make_label();
             put_label(loop_begin);
-            gen_exp(c.children[0], nb.var_map);
+            gen_exp(c.children[0], nctx.var_map);
             a("cmpl $0, %eax");
             a("jne ", loop_body);
-            a("jmp ", nb.loop_end);
+            a("jmp ", nctx.loop_end);
             put_label(loop_body);
-            gen_statement(c.children[1], nb);
-            put_label(nb.loop_body_end);
+            gen_statement(c.children[1], nctx);
+            put_label(nctx.loop_body_end);
             a("jmp ", loop_begin);
-            put_label(nb.loop_end);
+            put_label(nctx.loop_end);
         } else if (c.name == "do_while") {
-            t_block_info nb(b, make_label(), make_label());
+            t_context nctx = ctx;
+            nctx.loop_end = make_label();
+            nctx.loop_body_end = make_label();
             auto loop_begin = make_label();
             put_label(loop_begin);
-            gen_statement(c.children[0], nb);
-            put_label(nb.loop_body_end);
-            gen_exp(c.children[1], nb.var_map);
+            gen_statement(c.children[0], nctx);
+            put_label(nctx.loop_body_end);
+            gen_exp(c.children[1], nctx.var_map);
             a("cmpl $0, %eax");
-            a("je ", nb.loop_end);
+            a("je ", nctx.loop_end);
             a("jmp ", loop_begin);
-            put_label(nb.loop_end);
+            put_label(nctx.loop_end);
         } else if (c.name == "for") {
             auto loop_begin = make_label();
             auto loop_body = make_label();
-            t_block_info nb(b, make_label(), make_label());
+            t_context nctx = ctx;
+            nctx.loop_end = make_label();
+            nctx.loop_body_end = make_label();
             auto init_exp = c.children[0];
             if (init_exp.name == "declaration") {
-                gen_declaration(init_exp, nb);
+                gen_declaration(init_exp, nctx);
             } else {
                 if (not init_exp.children.empty()) {
-                    gen_exp(init_exp.children[0], nb.var_map);
+                    gen_exp(init_exp.children[0], nctx.var_map);
                 }
             }
             put_label(loop_begin);
             auto& ctrl_exp = c.children[1];
             if (not ctrl_exp.children.empty()) {
-                gen_exp(ctrl_exp.children[0], nb.var_map);
+                gen_exp(ctrl_exp.children[0], nctx.var_map);
                 a("cmpl $0, %eax");
                 a("jne ", loop_body);
-                a("jmp ", nb.loop_end);
+                a("jmp ", nctx.loop_end);
             }
             put_label(loop_body);
-            gen_statement(c.children[3], nb);
-            put_label(nb.loop_body_end);
+            gen_statement(c.children[3], nctx);
+            put_label(nctx.loop_body_end);
             auto& post_exp = c.children[2];
             if (not post_exp.children.empty()) {
-                gen_exp(post_exp.children[0], nb.var_map);
+                gen_exp(post_exp.children[0], nctx.var_map);
             }
             a("jmp ", loop_begin);
-            put_label(nb.loop_end);
-            nb.var_map.erase();
+            put_label(nctx.loop_end);
+            nctx.var_map.erase();
         } else if (c.name == "break") {
-            if (b.loop_end == "") {
+            if (ctx.loop_end == "") {
                 throw std::runtime_error("break outside of a loop");
             }
-            a("jmp ", b.loop_end);
+            a("jmp ", ctx.loop_end);
         } else if (c.name == "continue") {
-            if (b.loop_body_end == "") {
+            if (ctx.loop_body_end == "") {
                 throw std::runtime_error("continue outside of a loop");
             }
-            a("jmp ", b.loop_body_end);
+            a("jmp ", ctx.loop_body_end);
         }
     }
 
-    void gen_block_item(const t_ast& ast, t_block_info& b) {
+    void gen_block_item(const t_ast& ast, t_context& ctx) {
         if (ast.name == "declaration") {
-            gen_declaration(ast, b);
+            gen_declaration(ast, ctx);
         } else {
-            gen_statement(ast, b);
+            gen_statement(ast, ctx);
         }
     }
 
-    void gen_compound_statement(const t_ast& ast, const t_block_info& b) {
-        t_block_info nb = b;
+    void gen_compound_statement(const t_ast& ast, const t_context& ctx) {
+        t_context nctx = ctx;
         for (auto& c : ast.children) {
-            gen_block_item(c, nb);
+            gen_block_item(c, nctx);
         }
-        nb.var_map.erase();
+        nctx.var_map.erase();
+    }
+
+    auto gen_function(const t_ast& ast) {
+        auto& func_name = ast.value;
+        res += ".globl "; res += func_name; res += "\n";
+        put_label(func_name);
+        a("push %rbp");
+        a("mov %rsp, %rbp");
+        t_context ctx;
+        ctx.func_name = func_name;
+        for (auto& c : ast.children) {
+            gen_block_item(c, ctx);
+        }
+        a("movl $0, %eax");
+        put_label(func_name + "_end");
+        a("mov %rbp, %rsp");
+        a("pop %rbp");
+        a("ret");
     }
 }
 
 std::string gen_asm(const t_ast& ast) {
-    auto& fun_ast = ast.children[0];
-    res += ".globl main\n";
-    put_label("main");
-    a("push %rbp");
-    a("mov %rsp, %rbp");
-    t_block_info bi;
-    for (auto& c : fun_ast.children) {
-        gen_block_item(c, bi);
+    for (auto& c : ast.children) {
+        gen_function(c);
     }
-    a("movl $0, %eax");
-    put_label("main_end");
-    a("mov %rbp, %rsp");
-    a("pop %rbp");
-    a("ret");
     return res;
 }
