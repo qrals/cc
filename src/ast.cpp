@@ -2,6 +2,7 @@
 #include <string>
 #include <stdexcept>
 #include <functional>
+#include <iostream>
 
 #include "misc.hpp"
 #include "ast.hpp"
@@ -99,7 +100,7 @@ namespace {
     }
 
     auto parse_mul_exp(std::list<t_lexeme>& lexemes) {
-        return parse_left_assoc_bin_op({"*", "/"}, parse_factor, lexemes);
+        return parse_left_assoc_bin_op({"*", "/", "%"}, parse_factor, lexemes);
     }
 
     auto parse_plus_exp(std::list<t_lexeme>& lexemes) {
@@ -146,6 +147,34 @@ namespace {
 
     t_ast parse_block_item(std::list<t_lexeme>&);
 
+    t_ast parse_opt_exp(std::list<t_lexeme>& lexemes, const t_lexeme& l) {
+        std::vector<t_ast> children;
+        if (get_front(lexemes) == l) {
+            lexemes.pop_front();
+        } else {
+            children.push_back(parse_exp(lexemes));
+            pop_lexeme(lexemes, l);
+        }
+        return t_ast("opt_exp", children);
+    }
+
+    t_ast parse_exp_statement(std::list<t_lexeme>& lexemes) {
+        auto children = parse_opt_exp(lexemes, {";", ";"}).children;
+        return t_ast("exp_statement", children);
+    }
+
+    auto parse_declaration(std::list<t_lexeme>& lexemes) {
+        pop_lexeme(lexemes, {"keyword", "int"});
+        auto name = pop_name(lexemes, "identifier");
+        std::vector<t_ast> children;
+        if (get_front(lexemes) == t_lexeme{"=", "="}) {
+            lexemes.pop_front();
+            children.push_back(parse_exp(lexemes));
+        }
+        pop_lexeme(lexemes, {";", ";"});
+        return t_ast("declaration", name, children);
+    }
+
     t_ast parse_statement(std::list<t_lexeme>& lexemes) {
         if (lexemes.empty()) {
             throw std::runtime_error("parse error");
@@ -175,10 +204,47 @@ namespace {
             auto child = parse_exp(lexemes);
             pop_lexeme(lexemes, {";", ";"});
             return t_ast("return", {child});
-        } else {
-            auto child = parse_exp(lexemes);
+        } else if (lexemes.front() == t_lexeme{"keyword", "while"}) {
+            lexemes.pop_front();
+            pop_lexeme(lexemes, {"(", "("});
+            std::vector<t_ast> children;
+            children.push_back(parse_exp(lexemes));
+            pop_lexeme(lexemes, {")", ")"});
+            children.push_back(parse_statement(lexemes));
+            return t_ast("while", children);
+        } else if (lexemes.front() == t_lexeme{"keyword", "do"}) {
+            lexemes.pop_front();
+            std::vector<t_ast> children;
+            children.push_back(parse_statement(lexemes));
+            pop_lexeme(lexemes, {"keyword", "while"});
+            pop_lexeme(lexemes, {"(", "("});
+            children.push_back(parse_exp(lexemes));
+            pop_lexeme(lexemes, {")", ")"});
             pop_lexeme(lexemes, {";", ";"});
-            return t_ast("exp", {child});
+            return t_ast("do_while", children);
+        } else if (lexemes.front() == t_lexeme{"keyword", "for"}) {
+            lexemes.pop_front();
+            std::vector<t_ast> children;
+            pop_lexeme(lexemes, {"(", "("});
+            if (lexemes.front() == t_lexeme{"keyword", "int"}) {
+                children.push_back(parse_declaration(lexemes));
+            } else {
+                children.push_back(parse_opt_exp(lexemes, {";", ";"}));
+            }
+            children.push_back(parse_opt_exp(lexemes, {";", ";"}));
+            children.push_back(parse_opt_exp(lexemes, {")", ")"}));
+            children.push_back(parse_statement(lexemes));
+            return t_ast("for", children);
+        } else if (lexemes.front() == t_lexeme{"keyword", "break"}) {
+            lexemes.pop_front();
+            pop_lexeme(lexemes, {";", ";"});
+            return t_ast("break");
+        } else if (lexemes.front() == t_lexeme{"keyword", "continue"}) {
+            lexemes.pop_front();
+            pop_lexeme(lexemes, {";", ";"});
+            return t_ast("continue");
+        } else {
+            return parse_exp_statement(lexemes);
         }
     }
 
@@ -187,17 +253,7 @@ namespace {
             throw std::runtime_error("parse error");
         }
         if (lexemes.front() == t_lexeme{"keyword", "int"}) {
-            lexemes.pop_front();
-            auto name = pop_name(lexemes, "identifier");
-            std::vector<t_ast> children;
-            if (get_front(lexemes) == t_lexeme{"=", "="}) {
-                lexemes.pop_front();
-                children.push_back(parse_exp(lexemes));
-                pop_lexeme(lexemes, {";", ";"});
-            } else {
-                pop_lexeme(lexemes, {";", ";"});
-            }
-            return t_ast("declaration", name, children);
+            return parse_declaration(lexemes);
         } else {
             return parse_statement(lexemes);
         }

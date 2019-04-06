@@ -81,6 +81,24 @@ namespace {
         // }
     };
 
+    struct t_block_info {
+        t_var_map var_map;
+        std::string loop_body_end;
+        std::string loop_end;
+
+        t_block_info() = default;
+
+        t_block_info(
+            const t_block_info& bi,
+            const std::string& l0,
+            const std::string& l1
+        )
+            : var_map(bi.var_map) {
+            loop_body_end = l0;
+            loop_end = l1;
+        }
+    };
+
     auto boolify_eax() {
         a("cmpl $0, %eax");
         a("movl $0, %eax");
@@ -96,10 +114,10 @@ namespace {
     }
 
     void gen_exp(const t_ast& ast, t_var_map& var_map) {
-        if (ast.name == "exp") {
-            gen_exp(ast.children[0], var_map);
-            return;
-        }
+        // if (ast.name == "exp") {
+        //     gen_exp(ast.children[0], var_map);
+        //     return;
+        // }
         auto rel_bin_op = [&]() {
             gen_exp(ast.children[0], var_map);
             a("push %rax");
@@ -199,6 +217,12 @@ namespace {
                     a("mov %ebx, %eax");
                     a("movl $0, %edx");
                     a("idiv %ecx");
+                } else if (ast.value == "%") {
+                    a("mov %eax, %ecx");
+                    a("mov %ebx, %eax");
+                    a("movl $0, %edx");
+                    a("idiv %ecx");
+                    a("movl %edx, %eax");
                 }
             }
         } else if (ast.name == "tern_op") {
@@ -220,57 +244,128 @@ namespace {
         }
     }
 
-    void gen_compound_statement(const t_ast&, t_var_map);
+    void gen_compound_statement(const t_ast&, const t_block_info&);
 
-    void gen_statement(const t_ast& c, t_var_map& var_map) {
+    void gen_declaration(const t_ast& ast, t_block_info& bi) {
+        auto var_name = ast.value;
+        if (not bi.var_map.can_declare(var_name)) {
+            throw std::runtime_error("variable redefinition");
+        }
+        bi.var_map.insert_var(var_name);
+        if (not ast.children.empty()) {
+            gen_exp(ast.children[0], bi.var_map);
+            a("movl %eax, ", bi.var_map.get_var_adr(var_name));
+        }
+    }
+
+    void gen_statement(const t_ast& c, t_block_info& b) {
         if (c.name == "if") {
             auto cond_true = make_label();
             auto cond_false = make_label();
             auto end = make_label();
-            gen_exp(c.children[0], var_map);
+            gen_exp(c.children[0], b.var_map);
             a("cmpl $0, %eax");
             a("jne ", cond_true);
             a("jmp ", cond_false);
             put_label(cond_true);
-            gen_statement(c.children[1], var_map);
+            gen_statement(c.children[1], b);
             a("jmp ", end);
             put_label(cond_false);
             if (c.children.size() == 3) {
-                gen_statement(c.children[2], var_map);
+                gen_statement(c.children[2], b);
             }
             put_label(end);
-        } else if (c.name == "exp") {
-            gen_exp(c.children[0], var_map);
+        } else if (c.name == "exp_statement") {
+            if (not c.children.empty()) {
+                gen_exp(c.children[0], b.var_map);
+            }
         } else if (c.name == "return") {
-            gen_exp(c.children[0], var_map);
+            gen_exp(c.children[0], b.var_map);
             a("jmp main_end");
         } else if (c.name == "compound_statement") {
-            gen_compound_statement(c, var_map);
+            gen_compound_statement(c, b);
+        } else if (c.name == "while") {
+            t_block_info nb(b, make_label(), make_label());
+            auto loop_begin = make_label();
+            auto loop_body = make_label();
+            put_label(loop_begin);
+            gen_exp(c.children[0], nb.var_map);
+            a("cmpl $0, %eax");
+            a("jne ", loop_body);
+            a("jmp ", nb.loop_end);
+            put_label(loop_body);
+            gen_statement(c.children[1], nb);
+            put_label(nb.loop_body_end);
+            a("jmp ", loop_begin);
+            put_label(nb.loop_end);
+        } else if (c.name == "do_while") {
+            t_block_info nb(b, make_label(), make_label());
+            auto loop_begin = make_label();
+            put_label(loop_begin);
+            gen_statement(c.children[0], nb);
+            put_label(nb.loop_body_end);
+            gen_exp(c.children[1], nb.var_map);
+            a("cmpl $0, %eax");
+            a("je ", nb.loop_end);
+            a("jmp ", loop_begin);
+            put_label(nb.loop_end);
+        } else if (c.name == "for") {
+            auto loop_begin = make_label();
+            auto loop_body = make_label();
+            t_block_info nb(b, make_label(), make_label());
+            auto init_exp = c.children[0];
+            if (init_exp.name == "declaration") {
+                gen_declaration(init_exp, nb);
+            } else {
+                if (not init_exp.children.empty()) {
+                    gen_exp(init_exp.children[0], nb.var_map);
+                }
+            }
+            put_label(loop_begin);
+            auto& ctrl_exp = c.children[1];
+            if (not ctrl_exp.children.empty()) {
+                gen_exp(ctrl_exp.children[0], nb.var_map);
+                a("cmpl $0, %eax");
+                a("jne ", loop_body);
+                a("jmp ", nb.loop_end);
+            }
+            put_label(loop_body);
+            gen_statement(c.children[3], nb);
+            put_label(nb.loop_body_end);
+            auto& post_exp = c.children[2];
+            if (not post_exp.children.empty()) {
+                gen_exp(post_exp.children[0], nb.var_map);
+            }
+            a("jmp ", loop_begin);
+            put_label(nb.loop_end);
+            nb.var_map.erase();
+        } else if (c.name == "break") {
+            if (b.loop_end == "") {
+                throw std::runtime_error("break outside of a loop");
+            }
+            a("jmp ", b.loop_end);
+        } else if (c.name == "continue") {
+            if (b.loop_body_end == "") {
+                throw std::runtime_error("continue outside of a loop");
+            }
+            a("jmp ", b.loop_body_end);
         }
     }
 
-    void gen_block_item(const t_ast& ast, t_var_map& var_map) {
+    void gen_block_item(const t_ast& ast, t_block_info& b) {
         if (ast.name == "declaration") {
-            auto var_name = ast.value;
-            if (not var_map.can_declare(var_name)) {
-                throw std::runtime_error("variable redefinition");
-            }
-            var_map.insert_var(var_name);
-            if (not ast.children.empty()) {
-                gen_exp(ast.children[0], var_map);
-                a("movl %eax, ", var_map.get_var_adr(var_name));
-            }
+            gen_declaration(ast, b);
         } else {
-            gen_statement(ast, var_map);
+            gen_statement(ast, b);
         }
     }
 
-    void gen_compound_statement(const t_ast& ast, t_var_map outer_var_map) {
-        t_var_map var_map(outer_var_map);
+    void gen_compound_statement(const t_ast& ast, const t_block_info& b) {
+        t_block_info nb = b;
         for (auto& c : ast.children) {
-            gen_block_item(c, var_map);
+            gen_block_item(c, nb);
         }
-        var_map.erase();
+        nb.var_map.erase();
     }
 }
 
@@ -280,9 +375,9 @@ std::string gen_asm(const t_ast& ast) {
     put_label("main");
     a("push %rbp");
     a("mov %rsp, %rbp");
-    t_var_map var_map;
+    t_block_info bi;
     for (auto& c : fun_ast.children) {
-        gen_block_item(c, var_map);
+        gen_block_item(c, bi);
     }
     a("movl $0, %eax");
     put_label("main_end");

@@ -19,11 +19,12 @@ std::list<t_lexeme> lex(const std::string& source) {
     auto i = 0u;
     while (i < source.size()) {
         std::vector<std::string> keywords = {
-            "int", "return", "if", "else"
+            "int", "return", "if", "else", "while", "for", "do",
+            "continue", "break"
         };
         std::vector<std::string> tt = {
             "&&", "||", "==", "!=", "<=", ">=", "<", ">", "=", "?", ":",
-            "{", "}", "(", ")", ";", "-", "~", "!", "+", "/", "*"
+            "{", "}", "(", ")", ";", "-", "~", "!", "+", "/", "*", "%"
         };
         auto found = false;
         for (auto& t : tt) {
