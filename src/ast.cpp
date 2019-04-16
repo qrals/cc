@@ -7,286 +7,391 @@
 #include "misc.hpp"
 #include "ast.hpp"
 
-const std::vector<std::string> un_ops = {"-", "!", "~"};
-
 namespace {
-    auto& get_front(std::list<t_lexeme>& ll) {
-        if (ll.empty()) {
-            throw std::runtime_error("parse error");
+    std::vector<t_lexeme> ll;
+    unsigned idx;
+
+    auto init(std::vector<t_lexeme>& n_ll) {
+        ll = n_ll;
+        idx = 0;
+    }
+
+    auto& peek() {
+        if (idx < ll.size()) {
+            return ll[idx];
         } else {
-            return ll.front();
-        }
-    }
-
-    auto pop_value(std::list<t_lexeme>& ll, const std::string& value) {
-        auto lexeme = get_front(ll);
-        ll.pop_front();
-        if (lexeme.value != value) {
             throw std::runtime_error("parse error");
         }
     }
 
-    auto pop_lexeme(std::list<t_lexeme>& ll, const t_lexeme& l) {
-        auto lexeme = get_front(ll);
-        ll.pop_front();
+    auto advance() {
+        idx++;
+    }
+
+    auto empty() {
+        return idx >= ll.size();
+    }
+
+    auto pop_lexeme(const t_lexeme& l) {
+        auto lexeme = peek();
+        advance();
         if (lexeme != l) {
             throw std::runtime_error("parse error");
         }
     }
 
-    auto pop_name(std::list<t_lexeme>& ll, const std::string& name) {
-        auto lexeme = get_front(ll);
-        ll.pop_front();
+    auto pop_name(const std::string& name) {
+        auto lexeme = peek();
+        advance();
         if (lexeme.name != name) {
             throw std::runtime_error("parse error");
         }
         return lexeme.value;
     }
 
-    t_ast parse_exp(std::list<t_lexeme>&);
+    auto pop_punctuator(const std::string& s) {
+        pop_name(s);
+    }
 
-    auto parse_factor(std::list<t_lexeme>& ll) {
-        auto front = get_front(ll);
-        ll.pop_front();
-        if (front.name == "(") {
-            auto exp = parse_exp(ll);
-            pop_name(ll, ")");
-            return exp;
-        } else if (contains(un_ops, front.name)) {
-            auto f = parse_factor(ll);
-            return t_ast("un_op", front.name, {f});
-        } else if (front.name == "literal") {
-            return t_ast("constant", front.value);
-        } else if (front.name == "identifier") {
-            if (not ll.empty() and ll.front() == t_lexeme({"(", "("})) {
-                ll.pop_front();
-                pop_lexeme(ll, {")", ")"});
-                return t_ast("function_call", {front.value});
-            } else {
-                return t_ast("variable", front.value);
-            }
+    auto pop_keyword(const std::string& kw) {
+        auto& lexeme = peek();
+        if (lexeme == t_lexeme{"keyword", kw}) {
+            advance();
         } else {
             throw std::runtime_error("parse error");
         }
     }
 
-    auto parse_left_assoc_bin_op(
+    t_ast exp();
+
+    auto prim_exp() {
+        auto front = peek();
+        if (front.name == "identifier") {
+            advance();
+            return t_ast("identifier", front.value);
+        } else if (front.name == "literal") {
+            advance();
+            return t_ast("constant", front.value);
+        } else if (front.name == "(") {
+            advance();
+            auto res = exp();
+            pop_name(")");
+            return res;
+        } else {
+            throw std::runtime_error("parse error");
+        }
+    }
+
+    auto postfix_exp() {
+        auto res = prim_exp();
+        while (not empty()) {
+            auto front = peek();
+            if (front.name == "(") {
+                advance();
+                pop_name(")");
+                res = t_ast("function_call", {res});
+            } else {
+                break;
+            }
+        }
+        return res;
+    }
+
+    t_ast cast_exp();
+
+    auto un_exp() {
+        auto front = peek();
+        std::vector<std::string> un_ops = {"&", "*", "+", "-", "~", "!"};
+        if (contains(un_ops, front.name)) {
+            advance();
+            auto e = cast_exp();
+            return t_ast("un_op", front.name, {e});
+        } else {
+            return postfix_exp();
+        }
+    }
+
+    t_ast cast_exp() {
+        return un_exp();
+    }
+
+    auto left_assoc_bin_op(
         const std::vector<std::string>& ops,
-        std::function<t_ast(std::list<t_lexeme>&)> parse_subexp,
-        std::list<t_lexeme>& ll
+        std::function<t_ast()> subexp
         ) {
-        auto res = parse_subexp(ll);
-        while (not ll.empty()) {
-            auto op = ll.front().name;
+        auto res = subexp();
+        while (not empty()) {
+            auto front = peek();
+            auto& op = front.name;
             if (not contains(ops, op)) {
                 break;
             }
-            ll.pop_front();
-            auto t = parse_subexp(ll);
+            advance();
+            auto t = subexp();
             res = t_ast("bin_op", op, {res, t});
         }
         return res;
     }
 
-    t_ast parse_right_assoc_bin_op(
-        const std::vector<std::string>& ops,
-        std::function<t_ast(std::list<t_lexeme>&)> parse_subexp,
-        std::list<t_lexeme>& ll
-        ) {
-        auto res = parse_subexp(ll);
-        if (not ll.empty()) {
-            auto op = ll.front().name;
-            if (contains(ops, op)) {
-                ll.pop_front();
-                auto t = parse_right_assoc_bin_op(ops, parse_subexp, ll);
-                res = t_ast("bin_op", op, {res, t});
-            }
-        }
-        return res;
+    auto mul_exp() {
+        return left_assoc_bin_op({"*", "/", "%"}, cast_exp);
     }
 
-    auto parse_mul_exp(std::list<t_lexeme>& ll) {
-        return parse_left_assoc_bin_op({"*", "/", "%"}, parse_factor, ll);
+    auto add_exp() {
+        return left_assoc_bin_op({"+", "-"}, mul_exp);
     }
 
-    auto parse_plus_exp(std::list<t_lexeme>& ll) {
-        return parse_left_assoc_bin_op({"+", "-"}, parse_mul_exp, ll);
+    auto shift_exp() {
+        return add_exp();
     }
 
-    auto parse_lt_exp(std::list<t_lexeme>& ll) {
-        std::vector<std::string> ops = {"<", "<=", ">", ">="};
-        return parse_left_assoc_bin_op(ops, parse_plus_exp, ll);
+    auto rel_exp() {
+        return left_assoc_bin_op({"<", "<=", ">", ">="}, shift_exp);
     }
 
-    auto parse_eqeq_exp(std::list<t_lexeme>& ll) {
-        return parse_left_assoc_bin_op({"==", "!="}, parse_lt_exp, ll);
+    auto eql_exp() {
+        return left_assoc_bin_op({"==", "!="}, rel_exp);
     }
 
-    auto parse_and_exp(std::list<t_lexeme>& ll) {
-        return parse_left_assoc_bin_op({"&&"}, parse_eqeq_exp, ll);
+    auto bit_and_exp() {
+        return left_assoc_bin_op({"&"}, eql_exp);
     }
 
-    auto parse_or_exp(std::list<t_lexeme>& ll) {
-        return parse_left_assoc_bin_op({"||"}, parse_and_exp, ll);
+    auto bit_xor_exp() {
+        return left_assoc_bin_op({"^"}, bit_and_exp);
     }
 
-    t_ast parse_cond_exp(std::list<t_lexeme>& ll) {
-        auto x = parse_or_exp(ll);
-        if (get_front(ll) == t_lexeme{"?", "?"}) {
-            ll.pop_front();
-            auto y = parse_exp(ll);
-            pop_lexeme(ll, {":", ":"});
-            auto z = parse_cond_exp(ll);
+    auto bit_or_exp() {
+        return left_assoc_bin_op({"|"}, bit_xor_exp);
+    }
+
+    auto and_exp() {
+        return left_assoc_bin_op({"&&"}, bit_or_exp);
+    }
+
+    auto or_exp() {
+        return left_assoc_bin_op({"||"}, and_exp);
+    }
+
+    t_ast cond_exp() {
+        auto x = or_exp();
+        if (not empty() and peek().name == "?") {
+            advance();
+            auto y = exp();
+            pop_name(":");
+            auto z = cond_exp();
             return t_ast("tern_op", "?:", {x, y, z});
         } else {
             return x;
         }
     }
 
-    auto parse_eq_exp(std::list<t_lexeme>& ll) {
-        return parse_right_assoc_bin_op({"="}, parse_cond_exp, ll);
-    }
-
-    t_ast parse_exp(std::list<t_lexeme>& ll) {
-        return parse_eq_exp(ll);
-    }
-
-    t_ast parse_block_item(std::list<t_lexeme>&);
-
-    t_ast parse_opt_exp(std::list<t_lexeme>& ll, const t_lexeme& l) {
-        std::vector<t_ast> children;
-        if (get_front(ll) == l) {
-            ll.pop_front();
+    t_ast assign_exp() {
+        auto old_idx = idx;
+        auto x = un_exp();
+        t_ast res;
+        if (not empty()) {
+            auto front = peek();
+            auto& op = front.name;
+            std::vector<std::string> ops = {"="};
+            if (contains(ops, op)) {
+                advance();
+                auto y = assign_exp();
+                res = t_ast("bin_op", op, {x, y});
+            } else {
+                idx = old_idx;
+                res = cond_exp();
+            }
         } else {
-            children.push_back(parse_exp(ll));
-            pop_lexeme(ll, l);
+            res = x;
+        }
+        return res;
+    }
+
+    t_ast exp() {
+        return left_assoc_bin_op({","}, assign_exp);
+    }
+
+    t_ast const_exp() {
+        return cond_exp();
+    }
+
+    t_ast block_item();
+
+    t_ast opt_exp(const t_lexeme& end) {
+        std::vector<t_ast> children;
+        if (peek() == end) {
+            advance();
+        } else {
+            children.push_back(exp());
+            pop_lexeme(end);
         }
         return t_ast("opt_exp", children);
     }
 
-    t_ast parse_exp_statement(std::list<t_lexeme>& ll) {
-        auto children = parse_opt_exp(ll, {";", ";"}).children;
+    auto exp_statement() {
+        auto children = opt_exp({";", ";"}).children;
         return t_ast("exp_statement", children);
     }
 
-    auto parse_declaration(std::list<t_lexeme>& ll) {
-        pop_lexeme(ll, {"keyword", "int"});
-        auto name = pop_name(ll, "identifier");
+    auto declaration() {
+        pop_keyword("int");
+        auto id = pop_name("identifier");
         std::vector<t_ast> children;
-        if (get_front(ll) == t_lexeme{"=", "="}) {
-            ll.pop_front();
-            children.push_back(parse_exp(ll));
+        if (peek() == t_lexeme{"=", "="}) {
+            advance();
+            children.push_back(assign_exp());
         }
-        pop_lexeme(ll, {";", ";"});
-        return t_ast("declaration", name, children);
+        pop_punctuator(";");
+        return t_ast("declaration", id, children);
     }
 
-    t_ast parse_statement(std::list<t_lexeme>& ll) {
-        if (ll.empty()) {
+    auto compound_statement() {
+        advance();
+        std::vector<t_ast> children;
+        while (peek().name != "}") {
+            children.push_back(block_item());
+        }
+        advance();
+        return t_ast("compound_statement", children);
+    }
+
+    t_ast statement();
+
+    auto selection_statement() {
+        advance();
+        pop_name("(");
+        std::vector<t_ast> children;
+        children.push_back(exp());
+        pop_name(")");
+        children.push_back(statement());
+        if (peek() == t_lexeme{"keyword", "else"}) {
+            advance();
+            children.push_back(statement());
+        }
+        return t_ast("if", children);
+    }
+
+    auto jump_statement() {
+        auto front = peek();
+        t_ast res;
+        if (front.name == "keyword") {
+            if (front.value == "return") {
+                advance();
+                auto child = exp();
+                pop_name(";");
+                res = t_ast("return", {child});
+            } else if (front.value == "break") {
+                advance();
+                pop_name(";");
+                res = t_ast("break");
+            } else if (front.value == "continue") {
+                advance();
+                pop_name(";");
+                res = t_ast("continue");
+            }
+        } else {
             throw std::runtime_error("parse error");
         }
-        if (ll.front() == t_lexeme{"{", "{"}) {
-            ll.pop_front();
-            std::vector<t_ast> children;
-            while (get_front(ll) != t_lexeme{"}", "}"}) {
-                children.push_back(parse_block_item(ll));
+        return res;
+    }
+
+    auto iteration_statement() {
+        auto front = peek();
+        t_ast res;
+        if (front.name == "keyword") {
+            if (front.value == "while") {
+                advance();
+                pop_name("(");
+                std::vector<t_ast> children;
+                children.push_back(exp());
+                pop_name(")");
+                children.push_back(statement());
+                res = t_ast("while", children);
+            } else if (front.value == "do") {
+                advance();
+                std::vector<t_ast> children;
+                children.push_back(statement());
+                pop_keyword("while");
+                pop_punctuator("(");
+                children.push_back(exp());
+                pop_punctuator(")");
+                pop_punctuator(";");
+                res = t_ast("do_while", children);
+            } else if (front.value == "for") {
+                advance();
+                std::vector<t_ast> children;
+                pop_punctuator("(");
+                if (peek() == t_lexeme{"keyword", "int"}) {
+                    children.push_back(declaration());
+                } else {
+                    children.push_back(opt_exp({";", ";"}));
+                }
+                children.push_back(opt_exp({";", ";"}));
+                children.push_back(opt_exp({")", ")"}));
+                children.push_back(statement());
+                res = t_ast("for", children);
             }
-            ll.pop_front();
-            return t_ast("compound_statement", children);
-        } else if (ll.front() == t_lexeme{"keyword", "if"}) {
-            ll.pop_front();
-            pop_lexeme(ll, {"(", "("});
-            std::vector<t_ast> children;
-            children.push_back(parse_exp(ll));
-            pop_lexeme(ll, {")", ")"});
-            children.push_back(parse_statement(ll));
-            if (get_front(ll) == t_lexeme{"keyword", "else"}) {
-                ll.pop_front();
-                children.push_back(parse_statement(ll));
-            }
-            return t_ast("if", children);
-        } else if (ll.front() == t_lexeme{"keyword", "return"}) {
-            ll.pop_front();
-            auto child = parse_exp(ll);
-            pop_lexeme(ll, {";", ";"});
-            return t_ast("return", {child});
-        } else if (ll.front() == t_lexeme{"keyword", "while"}) {
-            ll.pop_front();
-            pop_lexeme(ll, {"(", "("});
-            std::vector<t_ast> children;
-            children.push_back(parse_exp(ll));
-            pop_lexeme(ll, {")", ")"});
-            children.push_back(parse_statement(ll));
-            return t_ast("while", children);
-        } else if (ll.front() == t_lexeme{"keyword", "do"}) {
-            ll.pop_front();
-            std::vector<t_ast> children;
-            children.push_back(parse_statement(ll));
-            pop_lexeme(ll, {"keyword", "while"});
-            pop_lexeme(ll, {"(", "("});
-            children.push_back(parse_exp(ll));
-            pop_lexeme(ll, {")", ")"});
-            pop_lexeme(ll, {";", ";"});
-            return t_ast("do_while", children);
-        } else if (ll.front() == t_lexeme{"keyword", "for"}) {
-            ll.pop_front();
-            std::vector<t_ast> children;
-            pop_lexeme(ll, {"(", "("});
-            if (ll.front() == t_lexeme{"keyword", "int"}) {
-                children.push_back(parse_declaration(ll));
+        } else {
+            throw std::runtime_error("parse error");
+        }
+        return res;
+    }
+
+    auto labeled_statement() {
+        return t_ast();
+    }
+
+    typedef std::vector<std::string> t_strv;
+
+    t_ast statement() {
+        if (peek().name == "{") {
+            return compound_statement();
+        } else if (peek().name == "keyword") {
+            auto v = peek().value;
+            auto jump_keywords = t_strv{"goto", "continue", "break", "return"};
+            if (contains(t_strv{"if", "switch"}, v)) {
+                return selection_statement();
+            } else if (contains(t_strv{"while", "do", "for"}, v)) {
+                return iteration_statement();
+            } else if (contains(jump_keywords, v)) {
+                return jump_statement();
+            } else if (contains({"case", "default"}, v)) {
+                return labeled_statement();
             } else {
-                children.push_back(parse_opt_exp(ll, {";", ";"}));
+                throw std::runtime_error("parse error");
             }
-            children.push_back(parse_opt_exp(ll, {";", ";"}));
-            children.push_back(parse_opt_exp(ll, {")", ")"}));
-            children.push_back(parse_statement(ll));
-            return t_ast("for", children);
-        } else if (ll.front() == t_lexeme{"keyword", "break"}) {
-            ll.pop_front();
-            pop_lexeme(ll, {";", ";"});
-            return t_ast("break");
-        } else if (ll.front() == t_lexeme{"keyword", "continue"}) {
-            ll.pop_front();
-            pop_lexeme(ll, {";", ";"});
-            return t_ast("continue");
         } else {
-            return parse_exp_statement(ll);
+            return exp_statement();
         }
     }
 
-    t_ast parse_block_item(std::list<t_lexeme>& ll) {
-        if (ll.empty()) {
+    t_ast block_item() {
+        if (empty()) {
             throw std::runtime_error("parse error");
         }
-        if (ll.front() == t_lexeme{"keyword", "int"}) {
-            return parse_declaration(ll);
+        if (peek() == t_lexeme{"keyword", "int"}) {
+            return declaration();
         } else {
-            return parse_statement(ll);
+            return statement();
         }
     }
 
-    auto parse_function(std::list<t_lexeme>& ll) {
-        pop_value(ll, "int");
-        auto name = pop_name(ll, "identifier");
-        pop_value(ll, "(");
-        pop_value(ll, ")");
-        pop_value(ll, "{");
-        std::vector<t_ast> children;
-        while (true) {
-            if (get_front(ll).name == "}") {
-                ll.pop_front();
-                break;
-            }
-            children.push_back(parse_block_item(ll));
-        }
-        return t_ast("function", name, children);
+    auto function_definition() {
+        pop_keyword("int");
+        auto func_name = pop_name("identifier");
+        pop_punctuator("(");
+        pop_punctuator(")");
+        auto children = compound_statement().children;
+        return t_ast("function", func_name, children);
     }
 }
 
-t_ast parse_program(std::list<t_lexeme>& ll) {
+t_ast parse_program(std::vector<t_lexeme>& n_ll) {
+    init(n_ll);
     std::vector<t_ast> children;
-    while (not ll.empty()) {
-        children.push_back(parse_function(ll));
+    while (not empty()) {
+        children.push_back(function_definition());
     }
     return t_ast("program", children);
 }

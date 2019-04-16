@@ -14,8 +14,8 @@ namespace {
     }
 }
 
-std::list<t_lexeme> lex(const std::string& source) {
-    std::list<t_lexeme> res;
+std::vector<t_lexeme> lex(const std::string& source) {
+    std::vector<t_lexeme> res;
     auto i = 0u;
     while (i < source.size()) {
         std::vector<std::string> keywords = {

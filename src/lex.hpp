@@ -1,6 +1,5 @@
 #pragma once
 
-#include <list>
 #include <string>
 #include <initializer_list>
 
@@ -27,4 +26,4 @@ struct t_lexeme {
     }
 };
 
-std::list<t_lexeme> lex(const std::string&);
+std::vector<t_lexeme> lex(const std::string&);

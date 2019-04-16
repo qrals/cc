@@ -1,6 +1,5 @@
 #pragma once
 
-#include <list>
 #include <string>
 #include <vector>
 #include "lex.hpp"
@@ -35,4 +34,4 @@ struct t_ast {
     }
 };
 
-t_ast parse_program(std::list<t_lexeme>&);
+t_ast parse_program(std::vector<t_lexeme>&);

@@ -128,7 +128,7 @@ namespace {
             }
         } else if (ast.name == "constant") {
             set_eax(gen_con(ast.value));
-        } else if (ast.name == "variable") {
+        } else if (ast.name == "identifier") {
             auto& var_name = ast.value;
             if (not var_map.contains(var_name)) {
                 throw std::runtime_error("undeclared identifier");
@@ -146,7 +146,7 @@ namespace {
         } else if (ast.name == "bin_op") {
             if (ast.value == "=") {
                 auto& lval = ast.children[0];
-                if (lval.name != "variable") {
+                if (lval.name != "identifier") {
                     throw std::runtime_error("bad lvalue");
                 }
                 auto var_name = lval.value;
