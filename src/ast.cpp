@@ -32,6 +32,10 @@ namespace {
         return idx >= ll.size();
     }
 
+    auto cmp(const std::string& name) {
+        return not empty() and peek().name == name;
+    }
+
     auto pop_lexeme(const t_lexeme& l) {
         auto lexeme = peek();
         advance();
@@ -40,7 +44,7 @@ namespace {
         }
     }
 
-    auto pop_name(const std::string& name) {
+    auto pop(const std::string& name) {
         auto lexeme = peek();
         advance();
         if (lexeme.name != name) {
@@ -50,7 +54,7 @@ namespace {
     }
 
     auto pop_punctuator(const std::string& s) {
-        pop_name(s);
+        pop(s);
     }
 
     auto pop_keyword(const std::string& kw) {
@@ -75,7 +79,7 @@ namespace {
         } else if (front.name == "(") {
             advance();
             auto res = exp();
-            pop_name(")");
+            pop(")");
             return res;
         } else {
             throw std::runtime_error("parse error");
@@ -88,7 +92,7 @@ namespace {
             auto front = peek();
             if (front.name == "(") {
                 advance();
-                pop_name(")");
+                pop(")");
                 res = t_ast("function_call", {res});
             } else {
                 break;
@@ -178,7 +182,7 @@ namespace {
         if (not empty() and peek().name == "?") {
             advance();
             auto y = exp();
-            pop_name(":");
+            pop(":");
             auto z = cond_exp();
             return t_ast("tern_op", "?:", {x, y, z});
         } else {
@@ -234,16 +238,57 @@ namespace {
         return t_ast("exp_statement", children);
     }
 
+    t_ast pointer_opt();
+
+    t_ast pointer() {
+        pop("*");
+        if (cmp("*")) {
+            return t_ast("pointer", {pointer()});
+        } else {
+            return t_ast("pointer");
+        }
+    }
+
+    t_ast pointer_opt() {
+        if (cmp("*")) {
+            return pointer();
+        } else {
+            return t_ast();
+        }
+    }
+
+    void declarator(t_ast& type, std::string& name) {
+        if (cmp("*")) {
+            advance();
+            type = t_ast("pointer", {type});
+            declarator(type, name);
+        } else {
+            if (cmp("identifier")) {
+                name = pop("identifier");
+            } else {
+                pop("(");
+                declarator(type, name);
+                pop(")");
+            }
+        }
+    }
+
+    auto declaration_specifiers() {
+        advance();
+        return t_ast({t_ast("int")});
+    }
+
     auto declaration() {
-        pop_keyword("int");
-        auto id = pop_name("identifier");
-        std::vector<t_ast> children;
+        auto type = declaration_specifiers();
+        std::string name;
+        declarator(type, name);
+        std::vector<t_ast> children = {type};
         if (peek() == t_lexeme{"=", "="}) {
             advance();
             children.push_back(assign_exp());
         }
         pop_punctuator(";");
-        return t_ast("declaration", id, children);
+        return t_ast("declaration", name, children);
     }
 
     auto compound_statement() {
@@ -260,10 +305,10 @@ namespace {
 
     auto selection_statement() {
         advance();
-        pop_name("(");
+        pop("(");
         std::vector<t_ast> children;
         children.push_back(exp());
-        pop_name(")");
+        pop(")");
         children.push_back(statement());
         if (peek() == t_lexeme{"keyword", "else"}) {
             advance();
@@ -279,15 +324,15 @@ namespace {
             if (front.value == "return") {
                 advance();
                 auto child = exp();
-                pop_name(";");
+                pop(";");
                 res = t_ast("return", {child});
             } else if (front.value == "break") {
                 advance();
-                pop_name(";");
+                pop(";");
                 res = t_ast("break");
             } else if (front.value == "continue") {
                 advance();
-                pop_name(";");
+                pop(";");
                 res = t_ast("continue");
             }
         } else {
@@ -302,10 +347,10 @@ namespace {
         if (front.name == "keyword") {
             if (front.value == "while") {
                 advance();
-                pop_name("(");
+                pop("(");
                 std::vector<t_ast> children;
                 children.push_back(exp());
-                pop_name(")");
+                pop(")");
                 children.push_back(statement());
                 res = t_ast("while", children);
             } else if (front.value == "do") {
@@ -379,7 +424,7 @@ namespace {
 
     auto function_definition() {
         pop_keyword("int");
-        auto func_name = pop_name("identifier");
+        auto func_name = pop("identifier");
         pop_punctuator("(");
         pop_punctuator(")");
         auto children = compound_statement().children;

@@ -32,6 +32,10 @@ struct t_ast {
         name = n;
         value = v;
     }
+
+    t_ast(const std::vector<t_ast>& c) {
+        children = c;
+    }
 };
 
 t_ast parse_program(std::vector<t_lexeme>&);
