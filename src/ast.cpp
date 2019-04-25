@@ -94,6 +94,11 @@ namespace {
                 advance();
                 pop(")");
                 res = t_ast("function_call", {res});
+            } else if (front.name == "[") {
+                advance();
+                auto e = exp();
+                pop("]");
+                res = t_ast("un_op", "*", {t_ast("bin_op", "+", {res, e})});
             } else {
                 break;
             }
@@ -269,6 +274,16 @@ namespace {
                 pop("(");
                 declarator(type, name);
                 pop(")");
+            }
+            while (true) {
+                if (cmp("[")) {
+                    advance();
+                    auto size = const_exp();
+                    pop("]");
+                    type = t_ast("array", {type, size});
+                } else {
+                    break;
+                }
             }
         }
     }

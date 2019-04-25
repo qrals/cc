@@ -34,33 +34,54 @@ namespace {
         res += y; res += ", "; res += z; res += "\n";
     }
 
+    auto gen_con(std::string s) {
+        return std::string("$") + s;
+    }
+
+    unsigned get_size(const t_ast& type) {
+        if (type.name == "array") {
+            auto arr_size_exp =  type.children[1];
+            if (arr_size_exp.name != "constant") {
+                throw std::runtime_error("bad array size");
+            }
+            auto arr_size = unsigned(std::stoul(arr_size_exp.value));
+            return get_size(type.children[0]) * arr_size;
+        } else {
+            return 8u;
+        }
+    }
+
     class t_var_map {
         struct t_var_data {
-            unsigned idx;
+            unsigned offset;
             t_ast type;
         };
 
         std::unordered_map<std::string, t_var_data> map;
         std::unordered_map<std::string, t_var_data> outer_map;
-        unsigned var_cnt;
+        unsigned cur_offset;
+        unsigned base_offset;
 
     public:
         t_var_map() {
-            var_cnt = 0;
+            base_offset = 0;
+            cur_offset = 0;
         }
 
         t_var_map(const t_var_map& vm) {
             outer_map = vm.outer_map;
-            var_cnt = vm.var_cnt;
+            cur_offset = vm.cur_offset;
+            base_offset = vm.cur_offset;
             for (const auto& v : vm.map) {
                 outer_map[v.first] = v.second;
             }
         }
 
         auto insert_var(const std::string& var_name, const t_ast& type) {
-            map[var_name] = {var_cnt, type};
-            var_cnt++;
-            a("subq $8, %rsp");
+            auto var_size = get_size(type);
+            cur_offset += var_size;
+            a("subq", gen_con(std::to_string(var_size)), "%rsp");
+            map[var_name] = {cur_offset, type};
         }
 
         auto contains(const std::string& var_name) {
@@ -74,11 +95,11 @@ namespace {
         auto get_var_adr(const std::string& var_name) {
             unsigned x;
             if (map.count(var_name)) {
-                x = map[var_name].idx;
+                x = map[var_name].offset;
             } else {
-                x = outer_map[var_name].idx;
+                x = outer_map[var_name].offset;
             }
-            return std::string("-") + std::to_string(8 * (x + 1)) + "(%rbp)";
+            return std::string("-") + std::to_string(x) + "(%rbp)";
         }
 
         auto get_var_type(const std::string& var_name) {
@@ -92,8 +113,8 @@ namespace {
         }
 
         auto erase() {
-            auto x = std::to_string(8 * map.size());
-            a(std::string("addq $") + x + ", %rsp");
+            auto x = std::to_string(cur_offset - base_offset);
+            a("addq", gen_con(x), "%rsp");
         }
     };
 
@@ -114,11 +135,7 @@ namespace {
         a(std::string("movq ") + v + ", %rax");
     }
 
-    auto gen_con(std::string s) {
-        return std::string("$") + s;
-    }
-
-    void gen_exp(const t_ast& ast, t_var_map& var_map) {
+    t_ast gen_exp(const t_ast& ast, t_var_map& var_map) {
         auto rel_bin_op = [&]() {
             gen_exp(ast.children[0], var_map);
             a("push %rax");
@@ -127,17 +144,21 @@ namespace {
             a("cmp %rax, %rbx");
             a("movq $0, %rax");
         };
+        auto res_type = t_ast({t_ast("int")});
         if (ast.name == "un_op") {
             if (ast.value == "&") {
                 auto x = ast.children[0];
                 if (x.name == "un_op" and x.value == "*") {
-                    gen_exp(x.children[0], var_map);
+                    res_type = gen_exp(x.children[0], var_map);
                 } else {
-                    auto adr = var_map.get_var_adr(ast.children[0].value);
+                    auto name = ast.children[0].value;
+                    auto adr = var_map.get_var_adr(name);
+                    auto type = var_map.get_var_type(name);
                     a("lea", adr, "%rax");
+                    res_type = t_ast("pointer", {type});
                 }
             } else {
-                gen_exp(ast.children[0], var_map);
+                auto type = gen_exp(ast.children[0], var_map);
                 if (ast.value == "-") {
                     a("neg %rax");
                 } else if (ast.value == "~") {
@@ -147,7 +168,16 @@ namespace {
                     a("movq $0, %rax");
                     a("sete %al");
                 } else if (ast.value == "*") {
-                    a("movq (%rax), %rax");
+                    if (type.children[0].name != "array") {
+                        a("movq (%rax), %rax");
+                    }
+                    if (type.name != "pointer") {
+                        throw std::runtime_error("bad dereferencing");
+                    }
+                    res_type = type.children[0];
+                    if (res_type.name == "array") {
+                        res_type = t_ast("pointer", {res_type.children[0]});
+                    }
                 }
             }
         } else if (ast.name == "constant") {
@@ -157,7 +187,15 @@ namespace {
             if (not var_map.contains(var_name)) {
                 throw std::runtime_error("undeclared identifier");
             }
-            set_rax(var_map.get_var_adr(ast.value));
+            auto type = var_map.get_var_type(var_name);
+            auto adr = var_map.get_var_adr(var_name);
+            if (type.name == "array") {
+                res_type = t_ast("pointer", {type.children[0]});
+                a("lea", adr, "%rax");
+            } else {
+                res_type = type;
+                set_rax(adr);
+            }
         } else if (ast.name == "function_call") {
             auto& func_name = ast.value;
             a("push %rbx");
@@ -171,7 +209,11 @@ namespace {
             if (ast.value == "=") {
                 auto& lval = ast.children[0];
                 if (lval.name == "un_op" and lval.value == "*") {
-                    gen_exp(lval.children[0], var_map);
+                    auto type = gen_exp(lval.children[0], var_map);
+                    if (type.name != "pointer") {
+                        throw std::runtime_error("bad dereferencing");
+                    }
+                    res_type = type.children[0];
                     a("push %rax");
                     gen_exp(ast.children[1], var_map);
                     a("pop %rbx");
@@ -184,6 +226,7 @@ namespace {
                     if (not var_map.contains(var_name)) {
                         throw std::runtime_error("undeclared identifier");
                     }
+                    res_type = var_map.get_var_type(var_name);
                     auto exp = ast.children[1];
                     gen_exp(exp, var_map);
                     a("movq %rax, ", var_map.get_var_adr(var_name));
@@ -231,27 +274,33 @@ namespace {
                 rel_bin_op();
                 a("setge %al");
             } else {
-                gen_exp(ast.children[0], var_map);
+                auto b_type = gen_exp(ast.children[1], var_map);
                 a("push %rax");
-                gen_exp(ast.children[1], var_map);
+                auto a_type = gen_exp(ast.children[0], var_map);
                 a("pop %rbx");
                 if (ast.value == "+") {
+                    if (a_type.name == "pointer") {
+                        auto elt_size = get_size(a_type.children[0]);
+                        a("movq", gen_con(std::to_string(elt_size)), "%rcx");
+                        a("imul %rcx, %rbx");
+                        res_type = a_type;
+                    } else if (b_type.name == "pointer") {
+                        auto elt_size = get_size(b_type.children[0]);
+                        a("movq", gen_con(std::to_string(elt_size)), "%rcx");
+                        a("imul %rcx, %rax");
+                        res_type = b_type;
+                    }
                     a("add %rbx, %rax");
                 } else if (ast.value == "-") {
-                    a("sub %rax, %rbx");
-                    a("mov %rbx, %rax");
+                    a("sub %rbx, %rax");
                 } else if (ast.value == "*") {
                     a("imul %rbx, %rax");
                 } else if (ast.value == "/") {
-                    a("mov %rax, %rcx");
-                    a("mov %rbx, %rax");
                     a("movq $0, %rdx");
-                    a("idiv %rcx");
+                    a("idiv %rbx");
                 } else if (ast.value == "%") {
-                    a("mov %rax, %rcx");
-                    a("mov %rbx, %rax");
                     a("movq $0, %rdx");
-                    a("idiv %rcx");
+                    a("idiv %rbx");
                     a("movq %rdx, %rax");
                 }
             }
@@ -272,6 +321,7 @@ namespace {
                 put_label(end);
             }
         }
+        return res_type;
     }
 
     void gen_compound_statement(const t_ast&, const t_context&);
